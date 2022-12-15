@@ -1,6 +1,9 @@
 package com.uid2.shared.vertx;
 
 import com.uid2.shared.Const;
+import com.uid2.shared.auth.ClientKey;
+import com.uid2.shared.auth.IAuthorizable;
+import com.uid2.shared.auth.OperatorKey;
 import com.uid2.shared.jmx.AdminApi;
 import com.uid2.shared.middleware.AuthMiddleware;
 import io.micrometer.core.instrument.Counter;
@@ -14,6 +17,7 @@ import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.micrometer.backends.BackendRegistries;
 
 import java.net.URI;
 import java.net.MalformedURLException;
@@ -104,7 +108,9 @@ public class RequestCapturingHandler implements Handler<RoutingContext> {
             // mask ip address form of host to reduce the metrics tag pollution
             host = "10.x.x.x:xx";
         }
-        incrementMetricCounter(apiContact, host, status, method, path);
+
+        final Integer siteId = getSiteId(context);
+        incrementMetricCounter(apiContact, siteId, host, status, method, path);
 
         if (request.headers().contains(Const.Http.AppVersionHeader)) {
             incrementAppVersionCounter(apiContact, request.headers().get(Const.Http.AppVersionHeader));
@@ -181,15 +187,33 @@ public class RequestCapturingHandler implements Handler<RoutingContext> {
         _capturedRequests.add(messageBuilder.toString());
     }
 
-    private void incrementMetricCounter(String apiContact, String host, int status, HttpMethod method, String path) {
+    private static Integer getSiteId(RoutingContext context) {
+        final Integer siteId = context.get(Const.RoutingContextData.SiteId);
+        if (siteId != null) {
+            return siteId;
+        }
+
+        final IAuthorizable profile = AuthMiddleware.getAuthClient(context);
+        if (profile instanceof OperatorKey) {
+            return ((OperatorKey) profile).getSiteId();
+        }
+
+        if (profile instanceof ClientKey) {
+            return ((ClientKey) profile).getSiteId();
+        }
+
+        return null;
+    }
+
+    private void incrementMetricCounter(String apiContact, Integer siteId, String host, int status, HttpMethod method, String path) {
         assert apiContact != null;
-        String key = apiContact + "|" + host + "|" + status + "|" + method.name() + "|" + path;
+        String key = apiContact + "|" + siteId + "|" + host + "|" + status + "|" + method.name() + "|" + path;
         if (!_apiMetricCounters.containsKey(key)) {
             Counter counter = Counter
                     .builder("uid2.http_requests")
                     .description("counter for how many http requests are processed per each api contact and status code")
-                    .tags("api_contact", apiContact, "host", host, "status", String.valueOf(status), "method", method.name(), "path", path)
-                    .register(Metrics.globalRegistry);
+                    .tags("api_contact", apiContact, "site_id", String.valueOf(siteId), "host", host, "status", String.valueOf(status), "method", method.name(), "path", path)
+                    .register(BackendRegistries.getDefaultNow());
             _apiMetricCounters.put(key, counter);
         }
 
